@@ -36,6 +36,26 @@
       overflow-x: hidden;
     }
 
+    /* ── Starfield parallax background ── */
+    #starfield {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    #starfield canvas {
+      position: absolute;
+      top: -5%;
+      left: -5%;
+      width: 110%;
+      height: 110%;
+      will-change: transform;
+    }
+
+    /* Everything else sits above the starfield */
+    nav, section, footer { position: relative; z-index: 1; }
+
     /* ── Nav ── */
     nav {
       position: fixed;
@@ -75,6 +95,14 @@
       flex-direction: column;
       justify-content: center;
       padding: 8rem 3.5rem 5rem;
+      overflow: hidden;
+    }
+    .hero-label,
+    .hero-name,
+    .hero-sub,
+    .hero-links {
+      position: relative;
+      z-index: 1;
       max-width: 900px;
     }
     .hero-label {
@@ -366,6 +394,12 @@
 </head>
 <body>
 
+<div id="starfield">
+  <canvas id="layer-far"></canvas>
+  <canvas id="layer-mid"></canvas>
+  <canvas id="layer-near"></canvas>
+</div>
+
 <nav>
   <a class="nav-logo" href="#hero">Leigh Smith</a>
   <ul class="nav-links">
@@ -551,6 +585,7 @@
             <div class="exp-bullet">GPU-accelerated exoplanet transit detection and light curve modelling (CUDA) for the ESA PLATO mission.</div>
             <div class="exp-bullet">Transit modelling of exoplanets hosting ring systems.</div>
             <div class="exp-bullet">Geometric and intensity distortion calibration for Euclid and VISTA instrumentation.</div>
+            <div class="exp-bullet">Supervision of graduate and postgraduate students in survey data mining and neural-network-based source extraction.</div>
           </div>
         </div>
       </div>
@@ -567,7 +602,6 @@
             <div class="exp-bullet">Robust regression analysis of astrometric time series to produce VIRAC, a world-leading near-IR proper motion catalogue of the Milky Way.</div>
             <div class="exp-bullet">Mining for periodic pulsating stars using supervised ML classification (scikit-learn).</div>
             <div class="exp-bullet">Bayesian analysis of stellar occultation light curves; probabilistic shape modelling.</div>
-            <div class="exp-bullet">Supervision of graduate and postgraduate students in survey data mining and neural-network-based source extraction.</div>
             <div class="exp-bullet">Extensive use of Python, NumPy, SciPy, PostgreSQL, MPI, and BeeGFS distributed storage.</div>
           </div>
         </div>
@@ -656,6 +690,207 @@
     { threshold: 0.1 }
   );
   document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+  /* ── Full-page parallax star field ── */
+  (function () {
+    const isSmallScreen = window.innerWidth < 700 || window.innerHeight < 500;
+    const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
+    // Touch-first / small-screen devices: lighter star density and capped pixel ratio
+    // to save battery. This no longer means "no parallax" — touch-and-drag drives
+    // the same parallax shift on these devices, in place of mouse movement.
+    const lightMode = isSmallScreen || isCoarsePointer;
+
+    const densityScale = lightMode ? 2.2 : 1; // bigger divisor = fewer stars
+    const layers = [
+      { canvas: document.getElementById('layer-far'),  depth: 0.06, density: 16000 * densityScale, sizeMin: 0.3, sizeMax: 0.8, alphaMin: 0.25, alphaMax: 0.55 },
+      { canvas: document.getElementById('layer-mid'),  depth: 0.16, density: 26000 * densityScale, sizeMin: 0.5, sizeMax: 1.3, alphaMin: 0.35, alphaMax: 0.7  },
+      { canvas: document.getElementById('layer-near'), depth: 0.38, density: 38000 * densityScale, sizeMin: 0.8, sizeMax: 2.1, alphaMin: 0.5,  alphaMax: 0.95 },
+    ];
+    if (layers.some(l => !l.canvas)) return;
+
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const dpr = Math.min(window.devicePixelRatio || 1, lightMode ? 1.5 : 2);
+
+    let w = 0, h = 0;
+    let targetX = 0, targetY = 0; // normalised -1..1 pointer offset, from viewport centre
+    let curX = 0, curY = 0;       // eased, currently-rendered offset
+    let running = false;
+    let touchStartX = null, touchStartY = null; // screen coords where the current touch began
+    let touchBaseX = 0, touchBaseY = 0;          // targetX/Y at the moment this touch began
+    let scrollY = window.scrollY || 0;           // current vertical scroll, drives continuous shift
+
+    layers.forEach(l => { l.ctx = l.canvas.getContext('2d'); });
+
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+    function sizeCanvas(l) {
+      // Canvas is drawn slightly oversized (matches the 110% CSS sizing) so parallax
+      // shift never reveals an edge.
+      const cw = window.innerWidth * 1.1;
+      const ch = window.innerHeight * 1.1;
+      l.canvas.width = cw * dpr;
+      l.canvas.height = ch * dpr;
+      l.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      l.w = cw; l.h = ch;
+    }
+
+    function makeStars(l) {
+      const count = Math.round((l.w * l.h) / l.density);
+      l.stars = [];
+      for (let i = 0; i < count; i++) {
+        // Proper motion: a tiny constant drift, independent of the mouse-driven parallax shift.
+        // Scaled by depth so nearer stars creep slightly faster than distant ones, echoing how
+        // real apparent proper motion also correlates loosely with distance.
+        const speed = (0.0025 + Math.random() * 0.01) * (0.4 + l.depth);
+        const angle = Math.random() * Math.PI * 2;
+        l.stars.push({
+          x: Math.random() * l.w,
+          y: Math.random() * l.h,
+          r: l.sizeMin + Math.random() * (l.sizeMax - l.sizeMin),
+          baseAlpha: l.alphaMin + Math.random() * (l.alphaMax - l.alphaMin),
+          twinkleSpeed: 0.3 + Math.random() * 0.7,
+          twinklePhase: Math.random() * Math.PI * 2,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          // a faint blue-white colour variance, like real stellar colour differences
+          tint: Math.random() < 0.15 ? '208,222,255' : (Math.random() < 0.08 ? '255,236,214' : '226,228,235')
+        });
+      }
+    }
+
+    function resizeAll() {
+      w = window.innerWidth;
+      h = window.innerHeight;
+      layers.forEach(l => { sizeCanvas(l); makeStars(l); });
+    }
+
+    function drawLayer(l, t, shiftX, shiftY) {
+      l.ctx.clearRect(0, 0, l.w, l.h);
+      for (const s of l.stars) {
+        // Advance proper motion (independent of any pointer/scroll-driven shift).
+        s.x += s.vx;
+        s.y += s.vy;
+        if (s.x < 0) s.x += l.w; else if (s.x > l.w) s.x -= l.w;
+        if (s.y < 0) s.y += l.h; else if (s.y > l.h) s.y -= l.h;
+
+        // Render position wraps the combined position+shift into canvas bounds, using
+        // the JS modulo idiom that handles negatives correctly: ((n % m) + m) % m.
+        // This is what lets the scroll-driven offset grow unbounded (no limit on how
+        // far down the page you scroll) without stars ever running off-canvas — they
+        // just cycle back in from the opposite edge, the way they already do for
+        // proper motion above.
+        const rx = ((s.x + shiftX) % l.w + l.w) % l.w;
+        const ry = ((s.y + shiftY) % l.h + l.h) % l.h;
+
+        const twinkle = 0.7 + 0.3 * Math.sin(t * 0.0009 * s.twinkleSpeed + s.twinklePhase);
+        const alpha = (s.baseAlpha * twinkle).toFixed(3);
+        l.ctx.beginPath();
+        l.ctx.arc(rx, ry, s.r, 0, Math.PI * 2);
+        l.ctx.fillStyle = `rgba(${s.tint}, ${alpha})`;
+        l.ctx.fill();
+      }
+    }
+
+    function frame(t) {
+      if (!running) return;
+
+      // On light-mode devices, render at roughly half rate (skip every other frame) —
+      // proper motion and twinkle are slow enough that this isn't visible, but it
+      // halves the canvas draw-call cost.
+      if (lightMode && Math.floor(t / 16.7) % 2 === 0) {
+        requestAnimationFrame(frame);
+        return;
+      }
+
+      // Ease toward the pointer target — gives a settling drift rather than a snap,
+      // similar to how real parallactic motion is gradual rather than instantaneous.
+      curX += (targetX - curX) * 0.05;
+      curY += (targetY - curY) * 0.05;
+
+      // Scroll contributes a second, independent offset that has no upper bound —
+      // unlike drag (clamped to -1..1, a fixed travel budget), scroll keeps shifting
+      // the field for as long as the page keeps scrolling, however long that is.
+      // Scaled down (rather than 1:1 with scroll distance) so it reads as a gentle
+      // depth cue rather than the stars racing past.
+      const scrollShiftX = 0; // no horizontal component from vertical scrolling
+      const scrollShiftY = -scrollY * 0.12;
+
+      const maxShiftPx = 70; // travel range for the nearest layer at full pointer deflection
+      layers.forEach(l => {
+        const dragShiftX = -curX * maxShiftPx * l.depth;
+        const dragShiftY = -curY * maxShiftPx * l.depth;
+        const shiftX = dragShiftX + scrollShiftX * l.depth;
+        const shiftY = dragShiftY + scrollShiftY * l.depth;
+        drawLayer(l, t, shiftX, shiftY);
+      });
+      requestAnimationFrame(frame);
+    }
+
+    function onPointerMove(e) {
+      targetX = (e.clientX / window.innerWidth - 0.5) * 2;  // -1..1
+      targetY = (e.clientY / window.innerHeight - 0.5) * 2;
+    }
+
+    function onTouchStart(e) {
+      if (!e.touches || !e.touches.length) return;
+      const touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      // Remember where the field already was, so this gesture adds to it rather
+      // than overwriting it — each new touch is a fresh absolute screen position,
+      // but the field's position should only change by how far the finger travels.
+      touchBaseX = targetX;
+      touchBaseY = targetY;
+    }
+
+    function onTouchMove(e) {
+      if (!e.touches || !e.touches.length || touchStartX === null) return;
+      const touch = e.touches[0];
+      const dx = (touch.clientX - touchStartX) / window.innerWidth;
+      const dy = (touch.clientY - touchStartY) / window.innerHeight;
+      // Same drag sensitivity as a full-width mouse sweep (factor of 2, since the
+      // -1..1 range spans the full viewport).
+      targetX = clamp(touchBaseX + dx * 2, -1, 1);
+      targetY = clamp(touchBaseY + dy * 2, -1, 1);
+      // Deliberately not calling preventDefault() — the page should keep scrolling
+      // normally under a drag; the stars just get a free, secondary reaction to it.
+    }
+
+    function start() {
+      if (running) return;
+      running = true;
+      requestAnimationFrame(frame);
+    }
+
+    function stop() {
+      running = false;
+    }
+
+    resizeAll();
+    window.addEventListener('resize', resizeAll);
+    window.addEventListener('scroll', () => { scrollY = window.scrollY || 0; }, { passive: true });
+
+    if (!reduceMotion) {
+      window.addEventListener('mousemove', onPointerMove);
+      // Touch-drag stands in for mouse movement: no mouse on a phone, so a finger
+      // dragging across the screen drives the same parallax shift instead.
+      // No "leave"/"end" reset on either input — the field holds its last position
+      // rather than snapping back to centre, which reads as more natural drift.
+      window.addEventListener('touchstart', onTouchStart, { passive: true });
+      window.addEventListener('touchmove', onTouchMove, { passive: true });
+
+      // Pause the animation loop entirely when the tab isn't visible, rather than
+      // burning CPU/GPU and battery on a background tab. Resume cleanly on return.
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) stop(); else start();
+      });
+
+      start();
+    } else {
+      // Respect reduced-motion preference: render one still frame, no animation loop.
+      layers.forEach(l => drawLayer(l, 0, 0, 0));
+    }
+  })();
 </script>
 </body>
 </html>
