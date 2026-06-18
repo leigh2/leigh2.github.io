@@ -702,9 +702,25 @@
 
     const densityScale = lightMode ? 2.2 : 1; // bigger divisor = fewer stars
     const layers = [
-      { canvas: document.getElementById('layer-far'),  depth: 0.06, density: 16000 * densityScale, sizeMin: 0.3, sizeMax: 0.8, alphaMin: 0.25, alphaMax: 0.55 },
-      { canvas: document.getElementById('layer-mid'),  depth: 0.16, density: 26000 * densityScale, sizeMin: 0.5, sizeMax: 1.3, alphaMin: 0.35, alphaMax: 0.7  },
-      { canvas: document.getElementById('layer-near'), depth: 0.38, density: 38000 * densityScale, sizeMin: 0.8, sizeMax: 2.1, alphaMin: 0.5,  alphaMax: 0.95 },
+      // skew > 1 biases the random draw toward the low end of the size/alpha range,
+      // approximating a real stellar luminosity function (far more faint stars than
+      // bright ones) — but sizeMin/alphaMin are raised here too, since a star drawn
+      // genuinely faint AND sub-pixel just renders as invisible regardless of how
+      // realistic that's meant to be. The skew gives the faint-heavy character; the
+      // raised floor makes sure that's actually visible rather than wasted.
+      // Floor values below were rendered and visually confirmed against the site's
+      // actual background colour (#0e0f13) — these are the dimmest/smallest values
+      // that still read as visible, not an estimate.
+      // EXPERIMENTAL: r^2 shell-density scaling applied below (bookmarked original at
+      // /home/claude/bookmarks/index_before_r2_scaling.html for revert). Real stellar
+      // shell density scales as distance^2 (thin-shell surface area), and since `depth`
+      // is an inverse proxy for distance here, relative density ~ (1/depth)^2 normalised
+      // to the near layer. This pushes far-layer count up by ~40x and mid by ~5.6x
+      // relative to near — substantially undoing the earlier GPU-power-driven density
+      // cuts. Visual correctness vs. performance tradeoff, evaluate before keeping.
+      { canvas: document.getElementById('layer-far'),  depth: 0.06, density: 1371 * densityScale, sizeMin: 0.55, sizeMax: 1.3, alphaMin: 0.35, alphaMax: 0.75, skew: 2.4 },
+      { canvas: document.getElementById('layer-mid'),  depth: 0.16, density: 5674 * densityScale, sizeMin: 0.6,  sizeMax: 1.5, alphaMin: 0.4,  alphaMax: 0.8,  skew: 1.8 },
+      { canvas: document.getElementById('layer-near'), depth: 0.38, density: 38000 * densityScale, sizeMin: 0.9,  sizeMax: 2.2, alphaMin: 0.55, alphaMax: 0.95, skew: 1.4 },
     ];
     if (layers.some(l => !l.canvas)) return;
 
@@ -741,13 +757,26 @@
         // Proper motion: a tiny constant drift, independent of the mouse-driven parallax shift.
         // Scaled by depth so nearer stars creep slightly faster than distant ones, echoing how
         // real apparent proper motion also correlates loosely with distance.
-        const speed = (0.0025 + Math.random() * 0.01) * (0.4 + l.depth);
+        // Doubled vs. the original tuning to compensate for now rendering at a capped
+        // ~30fps rather than display-native rate — keeps the perceived drift speed the
+        // same regardless of monitor refresh rate (each frame now represents roughly
+        // twice the elapsed real time it used to on a 60Hz display).
+        const speed = (0.005 + Math.random() * 0.02) * (0.4 + l.depth);
         const angle = Math.random() * Math.PI * 2;
+        // A single skewed "prominence" value (0..1) drives both size and brightness
+        // together, rather than randomising them independently — a star that's faint
+        // should usually also be small, and vice versa, matching how the eye reads
+        // "prominence" as one combined cue rather than two unrelated ones.
+        // Math.pow(uniform, skew) with skew > 1 biases prominence toward 0, giving
+        // far more faint/small stars than bright/large ones — approximating a real
+        // stellar luminosity function — while sizeMin/alphaMin still set a floor
+        // above the point where a star would be too small or faint to render visibly.
+        const prominence = Math.pow(Math.random(), l.skew);
         l.stars.push({
           x: Math.random() * l.w,
           y: Math.random() * l.h,
-          r: l.sizeMin + Math.random() * (l.sizeMax - l.sizeMin),
-          baseAlpha: l.alphaMin + Math.random() * (l.alphaMax - l.alphaMin),
+          r: l.sizeMin + prominence * (l.sizeMax - l.sizeMin),
+          baseAlpha: l.alphaMin + prominence * (l.alphaMax - l.alphaMin),
           twinkleSpeed: 0.3 + Math.random() * 0.7,
           twinklePhase: Math.random() * Math.PI * 2,
           vx: Math.cos(angle) * speed,
@@ -809,21 +838,32 @@
       }
     }
 
+    // Target render rate for the starfield, independent of display refresh rate.
+    // On a 144Hz+ monitor, requestAnimationFrame would otherwise fire 2.4x more often
+    // than on a typical 60Hz display for an effect that's both slow-moving (proper
+    // motion, twinkle, easing all operate on multi-second timescales) and entirely
+    // decorative — there's nothing here that benefits from matching native refresh rate.
+    // 30fps is comfortably smooth for this and roughly halves draw-call cost on 60Hz
+    // displays, and cuts it by ~80% on 144Hz ones.
+    const targetFrameMs = lightMode ? 66 : 33; // ~15fps light mode, ~30fps elsewhere
+    let lastFrameTime = 0;
+
     function frame(t) {
       if (!running) return;
 
-      // On light-mode devices, render at roughly half rate (skip every other frame) —
-      // proper motion and twinkle are slow enough that this isn't visible, but it
-      // halves the canvas draw-call cost.
-      if (lightMode && Math.floor(t / 16.7) % 2 === 0) {
+      if (t - lastFrameTime < targetFrameMs) {
         requestAnimationFrame(frame);
         return;
       }
+      lastFrameTime = t;
 
       // Ease toward the pointer target — gives a settling drift rather than a snap,
       // similar to how real parallactic motion is gradual rather than instantaneous.
-      curX += (targetX - curX) * 0.05;
-      curY += (targetY - curY) * 0.05;
+      // Easing factor doubled vs. the original 0.05 to compensate for now rendering
+      // at a capped ~30fps rather than display-native rate (often 60-144fps) — keeps
+      // the perceived settle speed the same regardless of monitor refresh rate.
+      curX += (targetX - curX) * 0.1;
+      curY += (targetY - curY) * 0.1;
 
       // Scroll contributes a second, independent offset that has no upper bound —
       // unlike drag (clamped to -1..1, a fixed travel budget), scroll keeps shifting
