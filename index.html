@@ -758,9 +758,27 @@
       }
     }
 
-    function resizeAll() {
-      w = window.innerWidth;
-      h = window.innerHeight;
+    function resizeAll(force) {
+      const newW = window.innerWidth;
+      const newH = window.innerHeight;
+
+      // Mobile browsers fire 'resize' when the URL bar collapses/expands on scroll —
+      // innerHeight genuinely changes (the chrome retracting reveals more viewport),
+      // but nothing about the page layout actually changed, so regenerating every
+      // star's position here would cause a visible "reshuffle" on every scroll.
+      // A genuine resize/orientation change always moves the width too (or moves
+      // height by far more than a URL bar's collapse, which is roughly 50-100px);
+      // a width-unchanged, small-height-delta resize is almost certainly just chrome.
+      if (!force && newW === w) {
+        const heightDelta = Math.abs(newH - h);
+        if (heightDelta > 0 && heightDelta < 150) {
+          h = newH; // still track it, so a later genuine resize measures from the right baseline
+          return;
+        }
+      }
+
+      w = newW;
+      h = newH;
       layers.forEach(l => { sizeCanvas(l); makeStars(l); });
     }
 
@@ -867,7 +885,7 @@
     }
 
     resizeAll();
-    window.addEventListener('resize', resizeAll);
+    window.addEventListener('resize', () => resizeAll());
     window.addEventListener('scroll', () => { scrollY = window.scrollY || 0; }, { passive: true });
 
     if (!reduceMotion) {
